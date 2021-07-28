@@ -20,6 +20,7 @@ import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.spy;
 
 import com.google.api.core.ApiFutures;
+import com.google.cloud.pubsublite.AdminClient;
 import com.google.cloud.pubsublite.CloudZone;
 import com.google.cloud.pubsublite.Message;
 import com.google.cloud.pubsublite.MessageMetadata;
@@ -32,6 +33,13 @@ import com.google.cloud.pubsublite.cloudpubsub.FlowControlSettings;
 import com.google.cloud.pubsublite.flink.PartitionFinishedCondition.Result;
 import com.google.cloud.pubsublite.flink.sink.PerServerPublisherCache;
 import com.google.cloud.pubsublite.internal.Publisher;
+import com.google.cloud.pubsublite.proto.Subscription;
+import com.google.cloud.pubsublite.proto.Subscription.DeliveryConfig;
+import com.google.cloud.pubsublite.proto.Subscription.DeliveryConfig.DeliveryRequirement;
+import com.google.cloud.pubsublite.proto.Topic;
+import com.google.cloud.pubsublite.proto.Topic.PartitionConfig;
+import com.google.cloud.pubsublite.proto.Topic.PartitionConfig.Capacity;
+import com.google.cloud.pubsublite.proto.Topic.RetentionConfig;
 import com.google.common.collect.HashMultimap;
 import com.google.common.collect.Multimap;
 import com.google.protobuf.ByteString;
@@ -55,15 +63,17 @@ import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.sink.SinkFunction;
 import org.apache.flink.test.util.MiniClusterWithClientResource;
+import org.junit.BeforeClass;
 import org.junit.ClassRule;
 import org.junit.Test;
 import org.mockito.Mockito;
 
 public class IntegrationTest {
-  private static final long PROJECT = 856003786687L;
   private static final String ZONE = "us-central1-b";
-  private static final String TOPIC = "flink-test";
-  private static final String SUBSCRIPTION = "flink-test-sub";
+  //  private static final String TOPIC = "flink-test";
+  //  private static final String SUBSCRIPTION = "flink-test-sub";
+  private static final String TOPIC = "flink-integration-test-topic";
+  private static final String SUBSCRIPTION = "flink-integration-test-subscription";
   private static final UUID uuid = UUID.randomUUID();
 
   @ClassRule
@@ -74,10 +84,15 @@ public class IntegrationTest {
               .setNumberTaskManagers(1)
               .build());
 
+  private static ProjectNumber projectNumber() {
+    // return ProjectNumber.of(856003786687L);
+    return ProjectNumber.of(Long.parseLong(System.getenv("GOOGLE_CLOUD_PROJECT_NUMBER")));
+  }
+
   private static TopicPath topicPath() {
     return TopicPath.newBuilder()
         .setLocation(CloudZone.parse(ZONE))
-        .setProject(ProjectNumber.of(PROJECT))
+        .setProject(projectNumber())
         .setName(TopicName.of(TOPIC))
         .build();
   }
@@ -85,7 +100,7 @@ public class IntegrationTest {
   private static SubscriptionPath subscriptionPath() {
     return SubscriptionPath.newBuilder()
         .setLocation(CloudZone.parse(ZONE))
-        .setProject(ProjectNumber.of(PROJECT))
+        .setProject(projectNumber())
         .setName(SubscriptionName.of(SUBSCRIPTION))
         .build();
   }
@@ -112,6 +127,10 @@ public class IntegrationTest {
     return PerServerPublisherCache.getOrCreate(sinkSettings().build().getPublisherConfig());
   }
 
+  private static AdminClient getAdminClient() {
+    return sourceSettings().build().getAdminClient();
+  }
+
   private static Message messageFromString(String i) {
     SimpleStringSchema s = new SimpleStringSchema();
     return Message.builder().setData(ByteString.copyFrom(s.serialize(i))).build();
@@ -123,6 +142,43 @@ public class IntegrationTest {
 
   private static List<String> prefixedStrings(IntStream stream, String prefix) {
     return stream.mapToObj(i -> prefix + i).collect(Collectors.toList());
+  }
+
+  @BeforeClass
+  public static void verifyResources() throws Exception {
+    getAdminClient()
+        .createTopic(
+            Topic.newBuilder()
+                .setName(topicPath().toString())
+                .setPartitionConfig(
+                    PartitionConfig.newBuilder()
+                        .setCount(2)
+                        .setCapacity(
+                            Capacity.newBuilder()
+                                .setPublishMibPerSec(4)
+                                .setSubscribeMibPerSec(4)
+                                .build())
+                        .build())
+                .setRetentionConfig(
+                    RetentionConfig.newBuilder().setPerPartitionBytes(32212254720L).build())
+                .build())
+        .get();
+    getAdminClient()
+        .createSubscription(
+            Subscription.newBuilder()
+                .setTopic(topicPath().toString())
+                .setDeliveryConfig(
+                    DeliveryConfig.newBuilder()
+                        .setDeliveryRequirement(DeliveryRequirement.DELIVER_IMMEDIATELY)
+                        .build())
+                .setName(subscriptionPath().toString())
+                .buildPartial())
+        .get();
+    try (AdminClient client = getAdminClient()) {
+      assertThat(client.getTopic(topicPath()).get().getPartitionConfig().getCount()).isEqualTo(2);
+      assertThat(client.getSubscription(subscriptionPath()).get().getTopic())
+          .isEqualTo(topicPath().toString());
+    }
   }
 
   @Test

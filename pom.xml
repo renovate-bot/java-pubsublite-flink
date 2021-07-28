@@ -145,9 +145,10 @@
             <scope>test</scope>
         </dependency>
         <dependency>
-            <groupId>org.slf4j</groupId>
-            <artifactId>slf4j-simple</artifactId>
-            <version>1.7.12</version>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-runtime_2.11</artifactId>
+            <version>1.13.0</version>
+            <type>test-jar</type>
             <scope>test</scope>
         </dependency>
     </dependencies>
